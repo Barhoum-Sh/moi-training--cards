@@ -1,0 +1,131 @@
+# ==============================================================================
+# وزارة الداخلية — منظومة إصدار البطاقات التدريبية ووحدة الرقابة الميدانية
+# مسار الأتمتة الذكي لمستودع: Barhoum-Sh/moi-training-cards
+# المسار المطلوب داخل المستودع: .github/workflows/deploy.yml
+# ==============================================================================
+
+name: Build & Deploy MOI Training Cards PWA
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Auto-Rename, Optimize & Package PWA
+    runs-on: ubuntu-latest
+    steps:
+      - name: 1. جلب ملفات المستودع (Checkout Repository)
+        uses: actions/checkout@v4
+
+      - name: 2. تهيئة إعدادات GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: 3. التصحيح الذكي لأسماء الملفات وبناء حزمة النشر (_site)
+        run: |
+          set -euo pipefail
+          mkdir -p _site
+
+          echo "🔹 فحص ملفات HTML والتعرف التلقائي على (index.html) و (inspector.html)..."
+
+          # إذا كانت الملفات مرفوعة بالاسم الصحيح مباشرة
+          [ -f "index.html" ] && cp "index.html" "_site/index.html"
+          [ -f "inspector.html" ] && cp "inspector.html" "_site/inspector.html"
+
+          # التعرف التلقائي على ملفات code_artifact.html و code_artifact2.html من محتواها الداخلي
+          for html_file in *.html; do
+            [ -e "$html_file" ] || continue
+            if [ "$html_file" = "index.html" ] || [ "$html_file" = "inspector.html" ]; then
+              continue
+            fi
+
+            if grep -qiE "BarcodeDetector|jsQR|الرقابة والتدقيق الميداني|رادار" "$html_file"; then
+              echo "  ✔ تم التعرف على ($html_file) كصفحة رادار الرقابة الميدانية -> تحويل إلى inspector.html"
+              cp "$html_file" "_site/inspector.html"
+            else
+              echo "  ✔ تم التعرف على ($html_file) كمنظومة إصدار البطاقات -> تحويل إلى index.html"
+              cp "$html_file" "_site/index.html"
+            fi
+          done
+
+          # خط دفاع إضافي في حال بقاء أحد الملفين غير معيّن
+          if [ ! -f "_site/index.html" ] && [ -f "code_artifact.html" ]; then
+            cp "code_artifact.html" "_site/index.html"
+          fi
+          if [ ! -f "_site/inspector.html" ] && [ -f "code_artifact2.html" ]; then
+            cp "code_artifact2.html" "_site/inspector.html"
+          fi
+
+          echo "🔹 توحيد ملف Service Worker بجميع الصيغ الممكنة لضمان عدم حدوث خطأ 404..."
+          SW_SOURCE=""
+          for candidate in sw.service.worker.js sw_service_worker.js sw.js; do
+            if [ -f "$candidate" ]; then
+              SW_SOURCE="$candidate"
+              break
+            fi
+          done
+
+          if [ -n "$SW_SOURCE" ]; then
+            SHORT_SHA="${GITHUB_SHA::7}"
+            # تحديث بصمة الكاش تلقائياً برقم التحديث الفريد (Commit SHA)
+            sed "s/const CACHE_VERSION = '[^']*';/const CACHE_VERSION = 'v4.1-${SHORT_SHA}';/g; s/const CACHE_NAME = '[^']*';/const CACHE_NAME = 'moi-training-cards-pwa-v4.1-${SHORT_SHA}';/g" "$SW_SOURCE" > "_site/sw.service.worker.js"
+            # توفير نسخ مطابقة بالشرطة السفلية والنقطة لضمان التوافق التام مع كود التسجيل داخل HTML
+            cp "_site/sw.service.worker.js" "_site/sw_service_worker.js"
+            cp "_site/sw.service.worker.js" "_site/sw.js"
+            echo "  ✔ تم تجهيز وختم المحرك ($SW_SOURCE) ببصمة: v4.1-${SHORT_SHA}"
+          fi
+
+          # إنشاء أو نسخ ملف manifest.json
+          if [ -f "manifest.json" ]; then
+            cp "manifest.json" "_site/manifest.json"
+          else
+            cat << 'EOF' > _site/manifest.json
+          {
+            "name": "وزارة الداخلية — منظومة البطاقات والرقابة الميدانية",
+            "short_name": "الرقابة الميدانية",
+            "description": "منظومة إصدار البطاقات التدريبية ووحدة الرقابة والتدقيق الميداني",
+            "start_url": "./index.html",
+            "scope": "./",
+            "display": "standalone",
+            "orientation": "portrait",
+            "dir": "rtl",
+            "lang": "ar",
+            "background_color": "#0f172a",
+            "theme_color": "#0f172a"
+          }
+          EOF
+            echo "  ✔ تم توليد manifest.json تلقائياً"
+          fi
+
+          touch _site/.nojekyll
+          echo "✅ محتويات حزمة النشر النهائية:"
+          ls -la _site/
+
+      - name: 4. رفع حزمة الموقع الجاهزة للنشر (Upload Pages Artifact)
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./_site
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: نشر المنظومة وإصدار الرابط الرسمي
+        id: deployment
+        uses: actions/deploy-pages@v4
